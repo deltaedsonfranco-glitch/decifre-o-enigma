@@ -1,15 +1,15 @@
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import unicodedata
-import time
+import datetime
 import plotly.express as px
 
-# 1. CONFIGURAÇÃO DE IDENTIDADE E CURSOR (MÃOZINHA)
-st.set_page_config(page_title="ESTRATÉGIA GABARITO - Missão 3º Sgt", page_icon="🛡️", layout="wide")
+# 1. CONFIGURAÇÃO DE IDENTIDADE E CURSOR
+st.set_page_config(page_title="ESTRATÉGIA GABARITO - Oficial", page_icon="🛡️", layout="wide")
 
 st.markdown("""
     <style>
-    /* Forçar cursor de mãozinha em elementos interativos */
     button, .stButton>button, .streamlit-expanderHeader, [data-baseweb="select"], .stRadio label, .stSelectbox {
         cursor: pointer !important;
     }
@@ -18,144 +18,123 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-ID_PLANILHA = "1bV86Twi_Mm4mgMOzoyZFdncEmgud4rAzP9lSvmnCYUM"
 URL_BRASAO = "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a8/Bras%C3%A3o_da_PMMG.svg/1200px-Bras%C3%A3o_da_PMMG.svg.png"
 
-# Inicialização de Memória de Estudo
+# CONEXÃO COM GOOGLE SHEETS (VIA SECRETS JSON)
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+# --- FUNÇÃO PARA SALVAR PROGRESSO REAL NA PLANILHA ---
+def registrar_no_banco(usuario, lei, titulo, q_id, status):
+    try:
+        # Lê os logs atuais para não sobrescrever
+        df_atual = conn.read(worksheet="Log_Progresso", ttl=0)
+        
+        # Cria a nova linha
+        nova_linha = pd.DataFrame([{
+            "Usuario": usuario,
+            "Materia": lei,
+            "Titulo": titulo,
+            "Questao": str(q_id),
+            "Status": status,
+            "Data": datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+        }])
+        
+        # Concatena e faz o upload
+        df_final = pd.concat([df_atual, nova_linha], ignore_index=True)
+        conn.update(worksheet="Log_Progresso", data=df_final)
+        st.toast("Missão registrada no banco de dados! ☁️")
+    except Exception as e:
+        st.error(f"Erro ao salvar progresso: {e}")
+
+# Inicialização de Memória da Sessão
 if 'autenticado' not in st.session_state: st.session_state.autenticado = False
 if 'historico_questoes' not in st.session_state: st.session_state.historico_questoes = []
-if 'progresso_local' not in st.session_state: st.session_state.progresso_local = {}
 
-@st.cache_data(ttl=5)
-def load_data(nome_aba):
-    url = f"https://docs.google.com/spreadsheets/d/{ID_PLANILHA}/gviz/tq?tqx=out:csv&sheet={nome_aba.replace(' ', '%20')}"
-    try:
-        df = pd.read_csv(url, dtype=str).fillna("")
-        return df.apply(lambda x: x.str.strip() if hasattr(x, 'str') else x)
-    except: return pd.DataFrame()
-
-# --- TELA DE LOGIN ---
+# --- LOGIN ---
 if not st.session_state.autenticado:
     st.markdown('<div style="text-align:center; padding-top: 50px;">', unsafe_allow_html=True)
     st.image(URL_BRASAO, width=100)
     st.title("ESTRATÉGIA GABARITO")
     st.subheader("🛡️ Missão 3º Sargento")
     
-    col_l1, col_l2, col_l3 = st.columns([1,2,1])
-    with col_l2:
-        u_input = st.text_input("Usuário PM:")
-        p_input = st.text_input("Senha de Acesso:", type="password")
-        if st.button("INICIAR MISSÃO"):
-            df_u = load_data("Usuarios")
-            if not df_u.empty:
-                if u_input in df_u.iloc[:, 0].values:
-                    linha = df_u[df_u.iloc[:, 0] == u_input]
-                    if p_input == str(linha.iloc[0, 1]):
-                        st.session_state.autenticado = True
-                        st.session_state.usuario = u_input
-                        st.rerun()
-                    else: st.error("Senha incorreta.")
-                else: st.error("Usuário não autorizado.")
+    u_input = st.text_input("Usuário PM:")
+    p_input = st.text_input("Senha:", type="password")
+    
+    if st.button("INICIAR MISSÃO"):
+        df_u = conn.read(worksheet="Usuarios", ttl=5)
+        if not df_u.empty:
+            if u_input in df_u.iloc[:, 0].values:
+                linha = df_u[df_u.iloc[:, 0] == u_input]
+                if p_input == str(linha.iloc[0, 1]):
+                    st.session_state.autenticado = True
+                    st.session_state.usuario = u_input
+                    st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
 
-# --- BARRA LATERAL (RANKING E LOGOUT) ---
+# --- SIDEBAR ---
 st.sidebar.image(URL_BRASAO, width=60)
-st.sidebar.markdown(f"### Sgt {st.session_state.usuario}")
+st.sidebar.title(f"Sgt {st.session_state.usuario}")
 
-# Cálculo do Ranking Privado
+# Ranking Privado (Lendo do Histórico Local)
 if st.session_state.historico_questoes:
     df_h = pd.DataFrame(st.session_state.historico_questoes)
     acertos = len(df_h[df_h['status'] == 'Acerto'])
-    total = len(df_h)
-    perc = (acertos/total*100)
-    st.sidebar.metric("Seu Aproveitamento", f"{perc:.1f}%")
-    st.sidebar.write(f"✅ {acertos} de {total} questões")
+    st.sidebar.metric("Aproveitamento Sessão", f"{(acertos/len(df_h)*100):.1f}%")
 
-st.sidebar.divider()
-menu = st.sidebar.radio("Navegação Principal:", ["📝 Simulado", "📖 Teoria", "📊 Performance"])
+menu = st.sidebar.radio("Navegação:", ["📝 Simulado", "📖 Teoria", "📊 Performance"])
 
-st.sidebar.divider()
-if st.sidebar.button("🚪 Sair do Sistema"):
+if st.sidebar.button("🚪 Sair"):
     st.session_state.autenticado = False
     st.rerun()
 
-# --- MODO SIMULADO (COLUNAS L E M) ---
+# --- MODO SIMULADO ---
 if menu == "📝 Simulado":
-    st.header("📝 Treinamento por Questões")
     area = st.sidebar.selectbox("Área do Edital:", ["Legislacao_Institucional", "Doutrina_Operacional", "Legislacao_Juridica"])
-    
-    # Exibir onde parou
-    if area in st.session_state.progresso_local:
-        st.info(f"📍 Último estudo nesta área: {st.session_state.progresso_local[area]}")
-
-    df_q = load_data(area)
+    df_q = conn.read(worksheet=area, ttl=5)
     
     if not df_q.empty:
-        try:
-            # Filtro pela Coluna L (Lei/Manual) - Índice 11
-            col_l_idx = 11
-            # Filtro pela Coluna M (Título/Capítulo) - Índice 12
-            col_m_idx = 12
-            
-            lista_leis = sorted(df_q.iloc[:, col_l_idx].unique())
-            sel_lei = st.selectbox("🎯 1. Selecione a Lei ou Manual:", lista_leis)
-            
-            df_f_lei = df_q[df_q.iloc[:, col_l_idx] == sel_lei]
-            lista_titulos = sorted(df_f_lei.iloc[:, col_m_idx].unique())
-            
-            sel_titulo = st.selectbox(f"📖 2. Tópico de {sel_lei}:", ["VER TODOS"] + lista_titulos)
-            
-            # Registrar progresso na sessão
-            st.session_state.progresso_local[area] = f"{sel_lei} > {sel_titulo}"
+        col_lei_idx = 11  # Coluna L
+        col_titulo_idx = 12 # Coluna M
+        
+        lista_leis = sorted(df_q.iloc[:, col_lei_idx].unique())
+        sel_lei = st.selectbox("🎯 1. Lei ou Manual:", lista_leis)
+        
+        df_f_lei = df_q[df_q.iloc[:, col_lei_idx] == sel_lei]
+        lista_titulos = sorted(df_f_lei.iloc[:, col_titulo_idx].unique())
+        sel_titulo = st.selectbox(f"📖 2. Tópico:", ["VER TODOS"] + lista_titulos)
+        
+        df_exibir = df_f_lei if sel_titulo == "VER TODOS" else df_f_lei[df_f_lei.iloc[:, col_titulo_idx] == sel_titulo]
 
-            df_final = df_f_lei if sel_titulo == "VER TODOS" else df_f_lei[df_f_lei.iloc[:, col_m_idx] == sel_titulo]
+        for i, row in df_exibir.iterrows():
+            with st.container():
+                st.markdown(f'<div class="question-box"><b>QUESTÃO {row.iloc[0]}</b><br><small>{sel_lei} | {row.iloc[col_titulo_idx]}</small><br><br>{row.iloc[3]}</div>', unsafe_allow_html=True)
+                
+                ops = {"A": row.iloc[4], "B": row.iloc[5], "C": row.iloc[6], "D": row.iloc[7]}
+                ops_v = {k: v for k, v in ops.items() if str(v) != "" and str(v).lower() != 'nan'}
+                
+                escolha = st.radio(f"Resposta Q{i}:", list(ops_v.values()), key=f"r_{i}")
+                
+                if st.button(f"Validar Questão {row.iloc[0]}", key=f"b_{i}"):
+                    letra_sel = [l for l, t in ops_v.items() if t == escolha][0]
+                    gab = str(row.iloc[8]).strip().upper()
+                    status = "Acerto" if letra_sel == gab else "Erro"
+                    
+                    # GRAVAÇÃO NO BANCO DE DADOS (GOOGLE SHEETS)
+                    registrar_no_banco(st.session_state.usuario, sel_lei, sel_titulo, row.iloc[0], status)
+                    
+                    st.session_state.historico_questoes.append({'status': status})
+                    if status == "Acerto": st.success("🎯 Acertou!")
+                    else: st.error(f"❌ Errou! Gabarito: {gab}")
+                    st.info(f"💡 Explicação: {row.iloc[9]}")
 
-            for i, row in df_final.iterrows():
-                with st.container():
-                    st.markdown(f'<div class="question-box"><b>QUESTÃO {row.iloc[0]}</b><br><small>{sel_lei} | {row.iloc[col_m_idx]}</small><br><br>{row.iloc[3]}</div>', unsafe_allow_html=True)
-                    
-                    # Alternativas E, F, G, H (Indices 4, 5, 6, 7)
-                    ops = {"A": row.iloc[4], "B": row.iloc[5], "C": row.iloc[6], "D": row.iloc[7]}
-                    ops_v = {k: v for k, v in ops.items() if v != ""}
-                    
-                    escolha = st.radio(f"Resposta para a Questão {row.iloc[0]}:", list(ops_v.values()), key=f"rad_{i}_{area}")
-                    
-                    if st.button(f"Validar Q{row.iloc[0]}", key=f"btn_{i}_{area}"):
-                        letra_sel = [l for l, t in ops_v.items() if t == escolha][0]
-                        gab = str(row.iloc[8]).strip().upper() # Coluna I
-                        status = "Acerto" if letra_sel == gab else "Erro"
-                        
-                        st.session_state.historico_questoes.append({'materia': sel_lei, 'status': status})
-                        
-                        if status == "Acerto": st.success("🎯 Alvo atingido! Resposta correta.")
-                        else: st.error(f"❌ Falha na missão. Gabarito: ({gab})")
-                        st.info(f"💡 Explicação: {row.iloc[9]}") # Coluna J
-                    st.divider()
-        except Exception as e:
-            st.error(f"Erro ao ler colunas L e M. Verifique sua planilha. Detalhe: {e}")
-
-# --- MODO TEORIA ---
+# --- TEORIA ---
 elif menu == "📖 Teoria":
-    st.header("📖 Caderno de Doutrina")
-    df_t = load_data("Explicacoes_Teoria")
+    st.header("📖 Centro de Teoria")
+    df_t = conn.read(worksheet="Explicacoes_Teoria", ttl=5)
     if not df_t.empty:
-        busca = st.text_input("🔍 O que deseja pesquisar na teoria?", "").lower()
+        busca = st.text_input("🔍 Buscar termo:", "").lower()
         for idx, r in df_t.iterrows():
             if busca in str(r).lower():
-                texto_formatado = str(r.iloc[2]).replace('\n', '<br>')
-                with st.expander(f"📌 {r.iloc[0]} - {r.iloc[1]}"):
-                    st.markdown(f'<div class="theory-card">{texto_formatado}</div>', unsafe_allow_html=True)
-
-# --- MODO PERFORMANCE ---
-elif menu == "📊 Performance":
-    st.header("📊 Análise de Desempenho")
-    if st.session_state.historico_questoes:
-        df_perf = pd.DataFrame(st.session_state.historico_questoes)
-        fig = px.bar(df_perf.groupby(['materia', 'status']).size().reset_index(name='Qtd'), 
-                     x='materia', y='Qtd', color='status', barmode='group',
-                     color_discrete_map={'Acerto': '#28a745', 'Erro': '#dc3545'},
-                     title="Aproveitamento por Matéria")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Realize o simulado para visualizar estatísticas de combate.")
+                with st.expander(f"📌 {r.iloc[0]} | {r.iloc[1]}"):
+                    st.markdown(f'<div class="theory-card">{r.iloc[2]}</div>', unsafe_allow_html=True)
