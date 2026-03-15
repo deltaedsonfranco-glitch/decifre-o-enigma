@@ -87,7 +87,7 @@ if 'autenticado' not in st.session_state: st.session_state.autenticado = False
 if not st.session_state.autenticado:
     st.markdown('<div style="text-align:center; padding-top: 50px;">', unsafe_allow_html=True)
     st.image(URL_BRASAO, width=120)
-    st.title("ESTRATÉGIA GABARITO")
+    st.title("DECIFRE O ENIGMA")
     with st.form("login"):
         u_input = st.text_input("Usuário PM:").strip().lower()
         p_input = st.text_input("Senha:", type="password").strip()
